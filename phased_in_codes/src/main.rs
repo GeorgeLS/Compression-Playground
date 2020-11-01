@@ -20,7 +20,6 @@ fn main() -> std::io::Result<()> {
         Action::Compress => {
             let encoder = Encoder::new(params);
             let encoded = encoder.encode_bytes(input_contents);
-            println!("Encoded: {:#?}", encoded);
             encoded.write_to_file(cli.output_file)?;
         }
 

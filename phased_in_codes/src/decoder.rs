@@ -77,7 +77,8 @@ mod tests {
         let bytes: &[u8] = &[0, 1, 2, 3, 4, 5];
         let params = PhasedInParams::new(6);
 
-        let encoder = Encoder::new(params.clone());
+        let mut encoder = Encoder::new(params.clone());
+        encoder.compute_encoded_symbols();
         let encoded_stream = encoder.encode_bytes(bytes);
 
         let decoder = Decoder::new(params);

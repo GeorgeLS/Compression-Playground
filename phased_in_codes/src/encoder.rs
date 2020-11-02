@@ -17,28 +17,32 @@ use std::{
 /// The phased-in encoder
 pub struct Encoder {
     params: PhasedInParams,
+    encoded_symbols: Vec<EncodedSymbol>,
 }
 
 /// This is an encoded symbol that the [`Encoder`] emits after processing a byte
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 struct EncodedSymbol {
-    encoded: BitVec<Msb0, u8>
+    symbol: u8,
+    num_bits_encoded: u8,
 }
 
 /// That's the result returned by the [`Encoder`] after encoding a stream of bytes
 #[derive(Debug, Eq, PartialEq)]
 pub struct EncodedStream {
-    stream: BitVec<Msb0, u8>
+    stream: BitVec<Msb0, u8>,
 }
 
 impl EncodedSymbol {
-    /// Creates a new EncodedSymbol from a byte based on the number of bits that were encoded
-    /// for this byte. It basically translates the given `symbol` to a [`BitVec`] of `num_bits_encoded` length
+    /// Creates a new EncodedSymbol from a byte based on the number of bits that were encoded for this byte.
     fn new(symbol: u8, num_bits_encoded: u8) -> Self {
-        let start = (u8::BITS - num_bits_encoded) as usize;
-        Self {
-            encoded: symbol.view_bits()[start..].to_bitvec()
-        }
+        Self { symbol, num_bits_encoded }
+    }
+
+    /// Converts this symbol to bits
+    fn to_bitvec(&self) -> BitVec<Msb0, u8> {
+        let start = (u8::BITS - self.num_bits_encoded) as usize;
+        self.symbol.view_bits()[start..].to_bitvec()
     }
 }
 
@@ -46,10 +50,9 @@ impl EncodedStream {
     /// Creates a new EncodedStream from a [`Vec`] of [`EncodedSymbol`]s.
     /// This basically accumulates all the bits from all the encoded symbols to a single [`BitVec`]
     fn new(symbols: Vec<EncodedSymbol>) -> Self {
-        let total_bits = symbols.iter().fold(0, |acc, s| acc + s.encoded.len());
-        let buffer = BitVec::with_capacity(total_bits);
+        let buffer = BitVec::with_capacity(symbols.len() * u8::BITS as usize);
         let stream = symbols.iter().fold(buffer, |mut acc, s| {
-            acc.extend_from_bitslice(s.encoded.as_bitslice());
+            acc.extend_from_bitslice(s.to_bitvec().as_bitslice());
             acc
         });
 
@@ -70,17 +73,20 @@ impl EncodedStream {
         let num_unused_bits = bytes[0] as usize;
         let num_used_bits = (bytes.len() - 1) * u8::BITS as usize - num_unused_bits;
 
-        let encoded_bitslice = unsafe { BitSlice::from_slice_unchecked(&bytes[1..]) };
-        let mut stream = BitVec::from_bitslice(encoded_bitslice);
-        unsafe { stream.set_len(num_used_bits); }
+        let stream = unsafe {
+            let mut bits = BitSlice::from_slice_unchecked(&bytes[1..]).to_bitvec();
+            bits.set_len(num_used_bits);
+            bits
+        };
 
         Self { stream }
     }
 
     /// Constructs an EncodedStream from a slice of bytes
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let bitslice = unsafe { BitSlice::from_slice_unchecked(bytes) };
-        let stream = BitVec::from_bitslice(bitslice);
+        let stream = unsafe {
+            BitSlice::from_slice_unchecked(bytes).to_bitvec()
+        };
 
         Self { stream }
     }
@@ -106,7 +112,17 @@ impl EncodedStream {
 impl Encoder {
     /// Creates a new Encoder with encoding parameters `params`
     pub fn new(params: PhasedInParams) -> Self {
-        Self { params }
+        Self {
+            params: params.clone(),
+            encoded_symbols: Vec::with_capacity(params.num_symbols as usize),
+        }
+    }
+
+    pub fn compute_encoded_symbols(&mut self) {
+        for symbol in 0..self.params.num_symbols {
+            let encoded = self.encode_symbol(symbol);
+            self.encoded_symbols.push(encoded)
+        }
     }
 
     /// Encodes a slice of bytes and returns an `EncodedStream`
@@ -122,13 +138,8 @@ impl Encoder {
     /// let encoded_stream = encoder.encode_bytes(bytes);
     /// ```
     pub fn encode_bytes(&self, bytes: &[u8]) -> EncodedStream {
-        let mut symbols = Vec::new();
-        for byte in bytes {
-            let encoded = self.encode_symbol(*byte);
-            symbols.push(encoded);
-        }
-
-        EncodedStream::new(symbols)
+        let encoded = bytes.iter().map(|b| self.encoded_symbols[*b as usize].clone()).collect();
+        EncodedStream::new(encoded)
     }
 
     /// Encodes a single byte (symbol) and returns an [`EncodedSymbol`]
@@ -163,7 +174,8 @@ mod tests {
 
     #[test]
     fn encode_bytes_works() {
-        let encoder = Encoder::new(PhasedInParams::new(15));
+        let mut encoder = Encoder::new(PhasedInParams::new(15));
+        encoder.compute_encoded_symbols();
         let bytes: Vec<_> = (0..15).collect();
         let expected_symbols = [
             EncodedSymbol::new(0b000, 3),
@@ -190,7 +202,8 @@ mod tests {
 
     #[test]
     fn encode_bytes_with_small_num_symbols_works() {
-        let encoder = Encoder::new(PhasedInParams::new(3));
+        let mut encoder = Encoder::new(PhasedInParams::new(3));
+        encoder.compute_encoded_symbols();
         let bytes: Vec<_> = (0..3).collect();
         let expected_symbols = [
             EncodedSymbol::new(0b0, 1),
